@@ -1,0 +1,36 @@
+[package]
+name = "antiban"
+version = "0.1.0"
+edition = "2021"
+description = "External-IP gate for known Claude and Anthropic destination addresses"
+license = "MIT"
+default-run = "antiban"
+
+[features]
+tray = ["dep:ksni", "dep:tao", "dep:tray-icon", "dep:tempfile", "dep:image"]
+
+[[bin]]
+name = "antiban-tray"
+path = "src/bin/antiban-tray.rs"
+required-features = ["tray"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ctrlc = { version = "3", features = ["termination"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "native-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = { version = "3", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", features = ["blocking"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tao = { version = "0.34", optional = true }
+tray-icon = { version = "0.21", optional = true }
+
+[profile.release]
+lto = true
+strip = true
