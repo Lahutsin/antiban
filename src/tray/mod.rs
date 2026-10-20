@@ -8,8 +8,13 @@ use crate::network::NetworkOptions;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use std::{
+    fs::{File, OpenOptions},
     io::{BufRead, BufReader},
-    os::unix::{fs::PermissionsExt, net::UnixListener},
+    os::unix::{
+        fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        io::AsRawFd,
+        net::UnixListener,
+    },
     path::Path,
     process::{Command, Stdio},
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
@@ -210,10 +215,57 @@ pub fn run(options: Options) -> Result<()> {
     if !uid.status.success() || uid.stdout == b"0\n" {
         bail!("Run antiban-tray as your desktop user, NOT with sudo");
     }
+    let uid: u32 = std::str::from_utf8(&uid.stdout)
+        .context("Invalid output from id -u")?
+        .trim()
+        .parse()
+        .context("Invalid desktop user ID")?;
+    let Some(_instance_lock) = InstanceLock::acquire(uid)? else {
+        eprintln!("Antiban tray is already running; ignoring duplicate launch");
+        return Ok(());
+    };
     #[cfg(target_os = "linux")]
     return linux::run(options);
     #[cfg(target_os = "macos")]
     return macos::run(options);
+}
+
+struct InstanceLock {
+    _file: File,
+}
+
+impl InstanceLock {
+    fn acquire(uid: u32) -> Result<Option<Self>> {
+        let path = std::env::temp_dir().join(format!("antiban-tray-{uid}.lock"));
+        Self::acquire_at(&path, uid)
+    }
+
+    fn acquire_at(path: &Path, uid: u32) -> Result<Option<Self>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(path)
+            .with_context(|| format!("Cannot open tray instance lock {}", path.display()))?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+            bail!("Tray instance lock has unsafe ownership or permissions");
+        }
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result == 0 {
+            Ok(Some(Self { _file: file }))
+        } else {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                Ok(None)
+            } else {
+                Err(error).context("Cannot acquire tray instance lock")
+            }
+        }
+    }
 }
 
 struct Worker {
@@ -413,6 +465,19 @@ fn work(options: Options, commands: Receiver<()>, notify: &impl Fn(Event)) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_tray_instance_can_hold_the_lock() {
+        use std::os::unix::fs::MetadataExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let uid = directory.path().metadata().unwrap().uid();
+        let path = directory.path().join("antiban-tray.lock");
+        let first = InstanceLock::acquire_at(&path, uid).unwrap().unwrap();
+        assert!(InstanceLock::acquire_at(&path, uid).unwrap().is_none());
+        drop(first);
+        assert!(InstanceLock::acquire_at(&path, uid).unwrap().is_some());
+    }
 
     #[test]
     fn shell_arguments_cannot_become_commands() {

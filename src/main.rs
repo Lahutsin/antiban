@@ -193,6 +193,38 @@ fn require_root() -> Result<()> {
     Ok(())
 }
 
+fn resolve_domains(domains: &BTreeSet<String>) -> Result<(BTreeSet<IpAddr>, bool)> {
+    let mut addresses = BTreeSet::new();
+    let mut dns_ok = true;
+    thread::scope(|scope| {
+        let lookups = domains
+            .iter()
+            .map(|host| scope.spawn(move || (host, (host.as_str(), 443).to_socket_addrs())))
+            .collect::<Vec<_>>();
+        for lookup in lookups {
+            let (host, result) = lookup
+                .join()
+                .map_err(|_| anyhow::anyhow!("DNS lookup thread panicked"))?;
+            match result {
+                Ok(resolved) => {
+                    let resolved: Vec<_> = resolved.map(|address| address.ip()).collect();
+                    if resolved.is_empty() {
+                        eprintln!("DNS returned no addresses for {host}; blocking");
+                        dns_ok = false;
+                    }
+                    addresses.extend(resolved);
+                }
+                Err(error) => {
+                    eprintln!("DNS failed for {host}: {error}; blocking");
+                    dns_ok = false;
+                }
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok((addresses, dns_ok))
+}
+
 fn record_baseline(path: &Path, ipv6: bool) -> Result<()> {
     let v4 = match network::public_ip(false, None)? {
         IpAddr::V4(ip) => ip,
@@ -371,26 +403,8 @@ fn monitor_inner(
         running.load(Ordering::SeqCst) && control.as_ref().is_none_or(|c| c.running())
     };
     while active(&control) {
-        let mut dns_ok = true;
-        for host in &domains {
-            if !active(&control) {
-                break;
-            }
-            match (host.as_str(), 443).to_socket_addrs() {
-                Ok(addresses) => {
-                    let addresses: Vec<_> = addresses.map(|addr| addr.ip()).collect();
-                    if addresses.is_empty() {
-                        eprintln!("DNS returned no addresses for {host}; blocking");
-                        dns_ok = false;
-                    }
-                    policy.addresses.extend(addresses);
-                }
-                Err(error) => {
-                    eprintln!("DNS failed for {host}: {error}; blocking");
-                    dns_ok = false;
-                }
-            }
-        }
+        let (addresses, dns_ok) = resolve_domains(&domains)?;
+        policy.addresses.extend(addresses);
         if !active(&control) {
             break;
         }

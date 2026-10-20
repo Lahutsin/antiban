@@ -174,8 +174,10 @@ To start immediately instead of logging out:
 /Library/PrivilegedHelperTools/dev.antiban/antiban-tray --installed-helper
 ```
 
-Do not start another tray if one is already running. macOS still requires the
-manual [PF setup](#macos-pf-setup); the installer does not change or enable PF.
+Only one tray instance runs per desktop user; duplicate manual or autostart
+launches exit without starting another monitor. DNS lookups for protected
+destinations run concurrently before the address check. macOS still requires
+the manual [PF setup](#macos-pf-setup); the installer does not change or enable PF.
 
 **Privilege scope:** `/etc/sudoers.d/antiban-desktop` grants only this desktop
 UID passwordless execution of the installed binary's `desktop-helper`
@@ -213,9 +215,21 @@ Antiban's firewall rules:
 
 The uninstaller requests administrator authorization and refuses to remove a
 running guardian or another account's installation. It does not remove the
-baseline file, disable PF, or edit the main PF configuration. To update an
-installation, uninstall, rebuild, and install again. These scripts are opt-in;
-building the project does not modify system startup or sudoers.
+baseline file, disable PF, or edit the main PF configuration.
+
+To update an existing Linux installation without changing its autostart entry
+or sudoers permission, run the updater as the desktop user:
+
+```sh
+bash scripts/update-installation.sh
+```
+
+It builds both release binaries, gracefully stops the installed tray, removes
+Antiban's firewall rules, replaces the root-owned binaries, and starts the tray
+again. Protection is temporarily removed during the update. If a guardian
+cannot be stopped cleanly, the updater refuses to replace binaries. The updater
+currently supports Linux only. These scripts are opt-in; building the project
+does not modify system startup or sudoers.
 
 ## Run from the terminal instead
 
@@ -356,8 +370,8 @@ single verified exit, not periodically comparing public IP addresses.
 cargo fmt --check
 cargo test --features tray
 cargo clippy --features tray --all-targets -- -D warnings
-bash -n scripts/install-autostart.sh scripts/uninstall-autostart.sh
-shellcheck scripts/install-autostart.sh scripts/uninstall-autostart.sh
+bash -n scripts/install-autostart.sh scripts/uninstall-autostart.sh scripts/update-installation.sh
+shellcheck scripts/install-autostart.sh scripts/uninstall-autostart.sh scripts/update-installation.sh
 ```
 
 The ignored Linux kernel test requires `unshare`, `ip`, `nft`, and enabled
